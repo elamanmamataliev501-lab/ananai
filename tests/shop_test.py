@@ -14,6 +14,10 @@ async def check(browser, url):
     await page.goto(url, wait_until='domcontentloaded')
     await expect(page.locator('#toc a').first).to_be_visible(timeout=40000)
     assert await page.get_by_role('button', name='Удалить раздел', exact=False).count() == 0
+    first=await page.locator('#toc a span').first.inner_text()
+    base='https://iusvdyjeimqrgtomojux.supabase.co/rest/v1/ananai_categories'
+    lookup=await page.request.get(base, params={'select':'name','name':'eq.'+first}, headers={'apikey':'sb_publishable_mBm_AmV5TFt4fCoPS8iQng_vR0TXcEe'})
+    assert lookup.ok and (await lookup.json())==[{'name':first}]
     sections = [{'name':'С товарами','total':3}, {'name':empty,'total':0}, {'name':race,'total':0}]
     deletions = []
     revision = 1
@@ -38,8 +42,8 @@ async def check(browser, url):
         elif u.path.endswith('/ananai_categories') and req.method=='DELETE':
             assert req.headers['authorization']=='Bearer fixture'
             name=parse_qs(u.query)['name'][0]
-            assert name.startswith('eq."') and name.endswith('"')
-            exact=name[4:-1].replace(r'\"','"')
+            assert name.startswith('eq.')
+            exact=name[3:]
             deletions.append(exact)
             if exact==race:
                 sections[-1]['total']=1
