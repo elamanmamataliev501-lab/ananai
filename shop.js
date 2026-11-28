@@ -329,8 +329,7 @@ async function removeEmptySection(button){
   if(!confirm('Удалить пустой раздел «'+name+'» из каталога?'))return;
   button.disabled=true;
   try{
-    const quoted='"'+name.replace(/["\\]/g,'\\$&')+'"';
-    const filter=new URLSearchParams({name:'eq.'+quoted,select:'name'});
+    const filter=new URLSearchParams({name:'eq.'+name,select:'name'});
     const deleted=await write('ananai_categories?'+filter,'DELETE');
     $('abn').textContent=deleted.length?'Раздел «'+name+'» удалён.':'Раздел уже удалён.';
   }catch(err){
