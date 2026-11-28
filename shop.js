@@ -18,7 +18,7 @@ const STORE='ananai_catalog_cart_v2', DATA={cats:[],texts:[]};
 const models=new Map(), byId=id=>models.get(id);
 let cur={}, cart=[], ed=null, admin=false, session=null, refreshing=null;
 let sections=[], page=0, pageRequest=0, settingsVersion=1, editTextVersion=1, revision=null;
-let checking=false, loaded=false, filterTimer, cartTicket=0;
+let syncing=null, loaded=false, filterTimer, cartTicket=0;
 try { const raw=JSON.parse(localStorage.getItem(STORE)||'[]'); if(Array.isArray(raw))cart=raw.filter(x=>x&&/^[\w-]{1,80}$/.test(x.id)&&Number.isSafeInteger(x.q)&&x.q>=1&&x.q<=99999); }catch{}
 function saveCart(){try{localStorage.setItem(STORE,JSON.stringify(cart))}catch{}}
 function media(path){
@@ -107,9 +107,17 @@ async function syncCart(){
   upd();if(dc.open)renderC();
   if(dm.open){if(!found.has(cur.id))dm.close();else{const m=byId(cur.id);if(!m.colors[cur.c])cur.c=0;if(!m.sizes.includes(cur.s))cur.s=null;renderM()}}
 }
-async function synchronize(force=false){
-  if(checking){if(force)refreshQueued=true;return}
-  checking=true;
+function synchronize(force=false){
+  if(syncing){if(force)refreshQueued=true;return syncing}
+  syncing=(async()=>{
+    do{
+      const refresh=force||refreshQueued;refreshQueued=false;force=false;
+      await refreshStore(refresh);
+    }while(refreshQueued);
+  })().finally(()=>{syncing=null});
+  return syncing;
+}
+async function refreshStore(force){
   try{
     const [state]=await rest('ananai_revision?select=revision&id=eq.true');
     if(force||!loaded||revision!==state.revision){
@@ -120,7 +128,7 @@ async function synchronize(force=false){
       if(!loaded){loaded=true;await openHash()}
       clearStatus();
     }
-  }catch(err){fail(err)}finally{checking=false;if(refreshQueued){refreshQueued=false;void synchronize(true)}}
+  }catch(err){fail(err)}
 }
 let refreshQueued=false;
 function gotoPage(n,scroll=false){
@@ -299,7 +307,10 @@ async function saveProduct(){
 de.addEventListener('cancel',e=>{if(ed?.saving)e.preventDefault()});
 de.addEventListener('close',()=>{for(const url of ed?.previews||[])URL.revokeObjectURL(url);ed=null});
 async function removeProduct(id){
-  const m=byId(id);if(!m||!confirm('Удалить «'+m.name+'»?'))return;
+  const fresh=await rowsFor([id]);
+  if(!fresh.length){await synchronize(true);throw Error('Товар уже удалён.')}
+  const m=storeRow(fresh[0]);
+  if(!confirm('Удалить «'+m.name+'» ('+pr(m)+')?'))return;
   const rows=await write('ananai_items?id=eq.'+encodeURIComponent(id)+'&version=eq.'+m.version,'DELETE');
   if(!rows.length)throw Error('Товар уже изменён. Обновите каталог.');
   $('abn').textContent='Товар удалён.';await synchronize(true);
@@ -350,7 +361,7 @@ $('pictures').onclick=async()=>{
     const o=await verifiedOrder();if(!o)return;
     if(navigator.canShare){
       const files=await Promise.all(o.lines.map(async(l,i)=>{const b=await imageBlob(l.image);return new File([b],(i+1)+'-Ananai.'+(b.type.split('/')[1]||'jpg'),{type:b.type})}));
-      if(navigator.canShare({files})){await navigator.share({files,text:o.message,title:'Заказ Ananai'});return}
+      if(navigator.canShare({files})){try{await navigator.share({files,text:o.message,title:'Заказ Ananai'});return}catch(err){if(err.name==='AbortError')return;if(err.name!=='NotAllowedError')throw err}}
     }
     await receipt(o);
   }catch(err){if(err.name!=='AbortError')$('orderNote').textContent=errMsg(err)}
@@ -436,6 +447,6 @@ $('backupFile').onchange=async e=>{
       items.push({id:row.id,cat:row.cat,position:row.position??i,name:row.name,art:row.art||'',price:row.price??0,desc:row.desc||'',sizes:row.sizes||[],colors,img:await restorePhoto(row.img),thumb:await restorePhoto(row.thumb)});
     }
     await write('rpc/ananai_restore','POST',{catalog:{items,categories,texts:d.texts},expected_revision:state.revision});
-    $('abn').textContent='Импортировано товаров: '+items.length;await synchronize(true);
+    await synchronize(true);$('abn').textContent='Импортировано товаров: '+items.length;
   }catch(err){$('abn').textContent=errMsg(err)}
 };
