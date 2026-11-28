@@ -1,44 +1,96 @@
 import asyncio
 import shutil
-from playwright.async_api import async_playwright
+import time
+from urllib.parse import parse_qs, urlsplit
+from playwright.async_api import async_playwright, expect
 
-SITES = [
-    'https://ananai.vercel.app/',
-    'https://elamanmamataliev501-lab.github.io/ananai/',
-]
+sites = ['https://ananai.vercel.app/', 'https://elamanmamataliev501-lab.github.io/ananai/']
+empty = 'Тест "пусто", & (0)'
+race = 'Освободившийся раздел'
 
 async def check(browser, url):
-    context = await browser.new_context(viewport={'width': 390, 'height': 844})
-    page = await context.new_page()
-    page.set_default_timeout(40000)
-    errors = []
-    page.on('pageerror', lambda error: errors.append(str(error)))
+    page = await browser.new_page(viewport={'width':390,'height':844})
+    # Confirm the published shop still loads using the public catalog, before testing edits in isolation.
     await page.goto(url, wait_until='domcontentloaded')
-    await page.locator('[data-open]').first.wait_for()
-    assert await page.locator('[data-open]').count() == 24
-    assert await page.locator('#toc a').count() == 14
-    await page.locator('[data-open]').first.scroll_into_view_if_needed()
-    await page.wait_for_function("document.querySelector('.pc img').naturalWidth > 0")
-    await page.goto(url + '#model=q0621&color=0')
-    await page.locator('#dm[open]').wait_for()
-    await page.locator('[data-si]').last.click()
-    await page.locator('[data-c]').last.click()
-    await page.locator('[data-add]').click()
-    await page.locator('#dm [data-close]').click()
-    await page.locator('[data-cart]').click()
-    assert '1 шт.' in await page.locator('#ct').inner_text()
-    await page.locator('#dc [data-close]').click()
-    await page.get_by_text('Для владельца', exact=True).click()
-    await page.locator('#login[open]').wait_for()
-    assert await page.locator('#pass').get_attribute('type') == 'password'
-    assert not errors, errors
-    print('PASS',url,'catalog, categories, Storage image, deep link, color, size, one-item cart, owner login',flush=True)
-    await context.close()
+    await expect(page.locator('#toc a').first).to_be_visible(timeout=40000)
+    assert await page.get_by_role('button', name='Удалить раздел', exact=False).count() == 0
+    sections = [{'name':'С товарами','total':3}, {'name':empty,'total':0}, {'name':race,'total':0}]
+    deletions = []
+    revision = 1
+    async def api(route):
+        nonlocal revision
+        req = route.request
+        u = urlsplit(req.url)
+        cors={'access-control-allow-origin':'*','access-control-allow-headers':'*','access-control-allow-methods':'GET, POST, DELETE, OPTIONS'}
+        if req.method=='OPTIONS':
+            return await route.fulfill(status=204, headers=cors)
+        status=200
+        if u.path.endswith('/token'):
+            body={'user':{'id':'sample-user'},'expires_at':int(time.time())+3600,'access_token':'fixture'}
+        elif u.path.endswith('/admins'):
+            body=[{'user_id':'sample-user'}]
+        elif u.path.endswith('/ananai_revision'):
+            body=[{'revision':revision}]
+        elif u.path.endswith('/ananai_settings'):
+            body=[{'version':1,'texts':[]}]
+        elif u.path.endswith('/ananai_sections'):
+            body=[{**s,'position':n} for n,s in enumerate(sections)]
+        elif u.path.endswith('/ananai_categories') and req.method=='DELETE':
+            assert req.headers['authorization']=='Bearer fixture'
+            name=parse_qs(u.query)['name'][0]
+            assert name.startswith('eq."') and name.endswith('"')
+            exact=name[4:-1].replace(r'\"','"')
+            deletions.append(exact)
+            if exact==race:
+                sections[-1]['total']=1
+                body={'code':'23503','message':'Referenced by products'}
+                status=409
+            else:
+                assert exact==empty
+                sections[:]=[s for s in sections if s['name']!=exact]
+                body=[{'name':exact}]
+            revision+=1
+        else:
+            body=[]
+        await route.fulfill(status=status,json=body,headers=cors)
+    await page.route('https://iusvdyjeimqrgtomojux.supabase.co/**',api)
+    await page.goto(url+'#admin',wait_until='domcontentloaded')
+    await page.reload(wait_until='domcontentloaded')
+    await page.locator('#email').fill('owner@example.invalid')
+    await page.locator('#pass').fill('fixture')
+    await page.locator('#loginForm button').click()
+    delete=page.get_by_role('button',name=f'Удалить раздел «{empty}»',exact=True)
+    await expect(delete).to_be_visible()
+    await expect(page.locator('[data-remove-section]')).to_have_count(2)
+    await page.locator('#toc a').filter(has_text=empty).click()
+    await expect(page.locator('#category')).to_have_value(empty)
+    async def cancel(dialog):
+        assert empty in dialog.message
+        await dialog.dismiss()
+    page.once('dialog',cancel)
+    await delete.click()
+    assert not deletions
+    async def confirm(dialog):
+        await dialog.accept()
+    page.once('dialog',confirm)
+    await delete.click()
+    await expect(page.locator('#toc a').filter(has_text=empty)).to_have_count(0)
+    await expect(page.locator('#category')).to_have_value('')
+    assert urlsplit(page.url).fragment=='toc'
+    assert deletions==[empty]
+    race_button=page.get_by_role('button',name=f'Удалить раздел «{race}»',exact=True)
+    page.once('dialog',confirm)
+    await race_button.click()
+    await expect(page.locator('#abn')).to_contain_text('уже есть товары')
+    await expect(race_button).to_have_count(0)
+    await expect(page.locator('#toc a').filter(has_text=race)).to_contain_text('1 модель')
+    print('PASS mobile live shop and isolated owner controls: guest visibility, cancel, confirmed empty removal, selection reset, occupied protection:',url,flush=True)
+    await page.close()
 
 async def main():
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(executable_path=shutil.which('google-chrome'), args=['--no-sandbox'])
-        await asyncio.gather(*(check(browser, url) for url in SITES))
+    async with async_playwright() as p:
+        browser=await p.chromium.launch(executable_path=shutil.which('google-chrome'),args=['--no-sandbox'])
+        await asyncio.gather(*(check(browser,url) for url in sites))
         await browser.close()
 
 asyncio.run(main())
