@@ -37,7 +37,7 @@ async function call(path,{method='GET',body,headers={},token,raw=false}={}){
   const res=await fetch(BASE+path,{method,headers:h,body:body===undefined?undefined:raw?body:JSON.stringify(body),cache:'no-store'});
   const text=await res.text();let data;
   try{data=text?JSON.parse(text):null}catch{data=null}
-  if(!res.ok)throw Object.assign(new Error(data?.msg||data?.message||data?.error_description||'Ошибка сервера '+res.status),{status:res.status});
+  if(!res.ok)throw Object.assign(new Error(data?.msg||data?.message||data?.error_description||'Ошибка сервера '+res.status),{status:res.status,code:data?.code});
   return data;
 }
 async function ownerToken(){
@@ -72,13 +72,30 @@ async function render(){
   $('pageNav').hidden=!page && rows.length<=24;$('pageInfo').textContent='Страница '+(page+1);
   $('prev').disabled=page===0;$('next').disabled=rows.length<=24;
 }
+function renderSectionList(){
+  $('toc').innerHTML=sections.map((c,i)=>{
+    const title=esc(c.name);
+    const link='<a href="#s'+i+'" data-section="'+i+'"><b>'+String(i+1).padStart(2,'0')+'</b><span>'+title+'</span><small>'+plural(c.total)+'</small></a>';
+    if(!admin || c.total!==0)return '<li>'+link+'</li>';
+    return '<li class="empty-section">'+link+'<button type="button" data-remove-section="'+title+'" aria-label="Удалить раздел «'+title+'»">Удалить раздел</button></li>';
+  }).join('');
+}
 async function meta(){
   const [cats,config]=await Promise.all([rest('ananai_sections?select=*&order=position,name'),rest('ananai_settings?select=texts,version&id=eq.true')]);
+  // Keep a section link attached to its original name when the list is renumbered.
+  if(/^#s\d+$/.test(location.hash)){
+    const linked=sections[Number(location.hash.slice(2))];
+    if(linked){
+      const index=cats.findIndex(c=>c.name===linked.name);
+      const hash=index<0?'#toc':'#s'+index;
+      if(location.hash!==hash)history.replaceState(null,'',hash);
+    }
+  }
   sections=cats;DATA.cats=cats.map(c=>c.name);
   let selected=$('category').value;
   $('category').innerHTML='<option value="">Все разделы</option>'+cats.map(c=>'<option>'+esc(c.name)+'</option>').join('');
   $('category').value=DATA.cats.includes(selected)?selected:'';
-  $('toc').innerHTML=cats.map((c,i)=>'<li><a href="#s'+i+'" data-section="'+i+'"><b>'+String(i+1).padStart(2,'0')+'</b><span>'+esc(c.name)+'</span><small>'+plural(c.total)+'</small></a></li>').join('');
+  renderSectionList();
   DATA.texts=config[0]?.texts||[];settingsVersion=config[0]?.version??1;applyTexts();
 }
 async function rowsFor(ids){
@@ -231,6 +248,7 @@ function editTexts(){
 
 function clearOwner(){
   session=null;admin=false;ed=null;$('ab').hidden=true;
+  renderSectionList();
   for(const d of [de,$('siteTexts'),$('passwordDialog')])if(d.open)d.close();
   if(loaded)render().catch(fail);
 }
@@ -240,7 +258,7 @@ $('loginForm').onsubmit=async e=>{
     const s=await call('/auth/v1/token?grant_type=password',{method:'POST',body:{email:$('email').value.trim(),password:$('pass').value}});
     const allowed=await rest('admins?select=user_id&user_id=eq.'+encodeURIComponent(s.user.id),{token:s.access_token});
     if(!allowed.length){await call('/auth/v1/logout?scope=local',{method:'POST',token:s.access_token}).catch(()=>{});throw Error('У аккаунта нет прав владельца.')}
-    session=s;admin=true;$('ab').hidden=false;$('loginNote').textContent='';$('login').close();await render();$('ab').scrollIntoView();
+    session=s;admin=true;$('ab').hidden=false;$('loginNote').textContent='';$('login').close();renderSectionList();await render();$('ab').scrollIntoView();
   }catch(err){$('loginNote').textContent=err.status===400?'Проверьте адрес почты и пароль.':errMsg(err)}
   finally{$('pass').value='';button.disabled=false}
 };
@@ -306,6 +324,23 @@ async function saveProduct(){
 }
 de.addEventListener('cancel',e=>{if(ed?.saving)e.preventDefault()});
 de.addEventListener('close',()=>{for(const url of ed?.previews||[])URL.revokeObjectURL(url);ed=null});
+async function removeEmptySection(button){
+  const name=button.dataset.removeSection;
+  if(!confirm('Удалить пустой раздел «'+name+'» из каталога?'))return;
+  button.disabled=true;
+  try{
+    const quoted='"'+name.replace(/["\\]/g,'\\$&')+'"';
+    const filter=new URLSearchParams({name:'eq.'+quoted,select:'name'});
+    const deleted=await write('ananai_categories?'+filter,'DELETE');
+    $('abn').textContent=deleted.length?'Раздел «'+name+'» удалён.':'Раздел уже удалён.';
+  }catch(err){
+    if(err.code!=='23503')throw err;
+    $('abn').textContent='В разделе «'+name+'» уже есть товары. Удалить можно только пустой раздел.';
+  }finally{
+    button.disabled=false;
+  }
+  await synchronize(true);
+}
 async function removeProduct(id){
   const fresh=await rowsFor([id]);
   if(!fresh.length){await synchronize(true);throw Error('Товар уже удалён.')}
@@ -391,6 +426,7 @@ document.addEventListener('click',async event=>{
     else if('cart' in d){renderC();show(dc)}
     else if(admin){
       if('new' in d)openEdit(null,$('category').value);
+      else if('removeSection' in d)await removeEmptySection(button);
       else if('edit' in d)openEdit(d.edit);
       else if('del' in d)await removeProduct(d.del);
       else if('save' in d)await saveProduct();

@@ -33,6 +33,9 @@ h2.t{font-size:28px;color:var(--ink);margin:48px 0 18px}
 .toc a{display:grid;grid-template-columns:44px 1fr auto;gap:8px;align-items:center;padding:12px 0;border-bottom:1px solid var(--ln);text-decoration:none;color:var(--ink)}
 .toc b{color:var(--g)}
 .toc small{color:var(--mu);font-size:12px}
+.toc .empty-section{display:flex;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--ln)}
+.toc .empty-section a{flex:1 1 210px;min-width:0;border:0}
+.toc .empty-section button{margin:0 8px 4px auto;min-height:40px;padding:6px 12px;border:1px solid #b98078;background:white;color:#833c33;border-radius:8px;font:inherit;font-size:13px;cursor:pointer}
 .hint{color:var(--mu);font-size:14px;margin:0 0 8px}
 .sec{padding-top:36px}
 .sh{display:flex;align-items:center;gap:14px;margin-bottom:16px}
